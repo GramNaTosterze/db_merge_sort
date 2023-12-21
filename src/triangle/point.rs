@@ -1,5 +1,5 @@
 use rand::{prelude::Distribution, distributions::Standard, Rng};
-use std::fmt;
+use std::{fmt, str, num::ParseIntError};
 use serde_derive::{Serialize, Deserialize};
 
 #[derive(Copy, Clone, Serialize, Deserialize, Eq)]
@@ -18,6 +18,23 @@ impl Point {
 impl fmt::Display for Point {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "({}, {})", self.x, self.y)
+    }
+}
+impl str::FromStr for Point {
+    type Err = ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        //(x,y)
+        let point_str: Vec<&str> = s.trim_matches(|c| c == '('|| c == ')').split(",").collect();
+        
+        if point_str.len() != 2 {
+            //error
+        }
+
+        Ok(Self{
+            x:point_str[0].parse()?,
+            y:point_str[1].parse()?
+        })
     }
 }
 impl PartialEq for Point {

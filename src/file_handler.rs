@@ -10,7 +10,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::triangle::Triangle;
 
-const BLOCK_SIZE: usize = 10*size_of::<Triangle>();
+pub const BLOCK_SIZE: usize = 1000*size_of::<Triangle>();
 
 pub struct FileHandler {
     /* File */
@@ -19,36 +19,26 @@ pub struct FileHandler {
     end_of_file: bool,
 
     /* data Block */
-    data: Vec<u8>
+    page: Vec<u8>,
+    disk_ops: usize
 }
 
 impl FileHandler {
     /* public methods */
-    pub fn create(path: PathBuf) -> Result<Self, Error> {
-        return match File::create(path.clone()) {
-            Ok(file) => {
-                Ok(Self {
-                    path,
-                    file,
-                    end_of_file: false,
-                    data: Vec::with_capacity(BLOCK_SIZE)
-                })
-            }
-            Err(err) => Err(err)
-        }
-    }
     pub fn open(path: PathBuf) -> Result<Self, Error> {
         return match File::options()
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(path.clone()) {
             Ok(file) => {
                 Ok(Self {
                     path,
                     file,
                     end_of_file: false,
-                    data: Vec::with_capacity(BLOCK_SIZE)
+                    page: Vec::with_capacity(BLOCK_SIZE),
+                    disk_ops: 0
                 })
             }
             Err(err) => Err(err)
@@ -57,111 +47,108 @@ impl FileHandler {
 
     pub fn view<T>(&mut self) -> Result<T, bincode::Error>
     where T: for<'a> Deserialize<'a> {
-        if self.data.len() == 0 {
-            self.read_block()?;
-        }
-
-        let data = &self.data[0..size_of::<T>()];
-        let obj: T = bincode::deserialize::<T>(&data)?;
+        if self.page.len() == 0 { self.read_page()?; }
+        let page = &self.page[0..size_of::<T>()];
+        let obj: T = bincode::deserialize::<T>(&page)?;
         
-        if self.data.len() == 0 {
-            self.read_block()?;
-        }
+        if self.page.len() == 0 { self.read_page()?; }
         Ok(obj)
     }
     pub fn read<T>(&mut self) -> Result<T, bincode::Error> 
     where T: for<'a> Deserialize<'a> {
-        if self.data.len() == 0 {
-            self.read_block()?;
-        }
+        if self.page.len() == 0 { self.read_page()?; }
+        
+        if self.page.len() < size_of::<T>() { return Err(Error::new(ErrorKind::Other, "page empty").into()); }
+        let mut page = self.page.split_off(size_of::<T>());
+        unsafe {ptr::swap(&mut page, &mut self.page);}
+        let obj: T = bincode::deserialize::<T>(&page)?;
 
-        let mut data = self.data.split_off(size_of::<T>());
-        unsafe {ptr::swap(&mut data, &mut self.data);}
-        let obj: T = bincode::deserialize::<T>(&data)?;
-
-        if self.data.len() == 0 {
-            self.read_block()?;
-        }
+        if self.page.len() == 0 { self.read_page()?; }
         Ok(obj)
     }
     pub fn write<T>(&mut self, obj: T) -> Result<(), bincode::Error> 
     where T: Serialize {
-        if self.data.len() == BLOCK_SIZE {
-            self.write_block()?;
-        }
+        if self.page.len() == BLOCK_SIZE { self.write_page()?; }
 
-        let mut data = bincode::serialize(&obj)?;
-        //assert!(data.len() + self.data.len() <= self.data.capacity());
-        self.data.append(&mut data);
+        let mut page = bincode::serialize(&obj)?;
+        self.page.append(&mut page);
         Ok(())
     }
     pub fn flush(&mut self) -> Result<(),Error> {
-        self.write_block()?;
-        self.data.clear();
+        self.write_page()?;
+        self.rewind()?;
         Ok(())
     }
     pub fn clear(&mut self) -> Result<(), Error> {
-        self.file.rewind()?;
+        self.rewind()?;
         self.file.set_len(0)?;
-        self.data.clear();
+        self.disk_ops = 0;
+        Ok(())
+    }
+    pub fn rewind(&mut self) -> Result<(), Error> {
+        self.end_of_file = false;
+        self.file.rewind()?;
+        self.page.clear();
         Ok(())
     }
     pub fn print_content<T>(&mut self) -> Result<(), Error> 
     where T: std::fmt::Display+for<'a> Deserialize<'a> {
-        let mut number_of_objs = 0;
-        /* save current state */
-        let position = self.file.stream_position()?;
-        let data = self.data.clone();
-        let end_of_file = self.end_of_file;
 
-        self.end_of_file = false;
-        self.file.rewind()?;
-        self.data.clear();
-        while !self.eof() || self.data.len() != 0 {
-            println!("{}", self.read::<T>().expect("Problem deserializing"));
-            number_of_objs+=1;
+        let disk_ops = self.disk_ops;
+
+        let page = self.page.clone();
+        self.rewind()?;
+        //self.page = page.clone();
+
+        while !self.eof() || self.page.len() != 0 {
+            match self.read::<T>() {
+                Ok(obj) => println!("{obj}"),
+                Err(_) => break
+            }
+        }
+        if page.len() >= size_of::<T>() {
+            for i in (0..(page.len())).step_by(size_of::<T>()) {
+                let obj = bincode::deserialize::<T>(&page[i..i+size_of::<T>()]).unwrap();
+                println!("{obj}")
+            }
         }
 
-        /* restore current state */
-        //self.file.seek(SeekFrom::Start(position))?;
-        //self.data = data;
-        //self.end_of_file = end_of_file;
-        self.end_of_file = false;
-        self.file.rewind()?;
-        self.data.clear();
-
-        println!("N: {number_of_objs}");
+        self.rewind()?;
+        self.page = page.clone();
+        self.disk_ops = disk_ops;
         Ok(())
     }
+    pub fn eof(&self) -> bool { return self.end_of_file && self.page.len() == 0; }
     /* getters */
-    pub fn eof(&self) -> bool {
-        return self.end_of_file;
-    }
-    pub fn path(&self) -> PathBuf {
-        return self.path.clone();
-    }
+    pub fn path(&self) -> PathBuf { return self.path.clone(); }
+    pub fn disk_ops(&self) -> usize { return self.disk_ops; }
 
 
     /* private methods */
 
-    fn read_block(&mut self) -> Result<(), Error> {
+    fn read_page(&mut self) -> Result<(), Error> {
         if self.end_of_file { return Ok((/* no more blocks */)) }
-        if self.data.len() != 0 { return Err(Error::new(ErrorKind::Other, "block not empty")); }
+        if self.page.len() != 0 { return Err(Error::new(ErrorKind::Other, "block not empty")); }
 
-        self.data = vec![0; 240];
-        let bytes = self.file.read(&mut self.data)?;
+        self.page = vec![0; BLOCK_SIZE];
+        let bytes = self.file.read(&mut self.page)?;
+        
         if bytes < BLOCK_SIZE {
-            self.data = self.data[0..bytes].to_vec();
+            self.page = self.page[0..bytes].to_vec();
             self.end_of_file = true;
         }
+        
+        self.disk_ops+=1;
         Ok(())
     }
-    fn write_block(&mut self) -> Result<(),Error> {
-        if self.data.len() == 0 {
-            return Err(Error::new(ErrorKind::Other, "block empty"));
-        }
-        self.file.write(&self.data)?;
-        self.data.clear();
+    fn write_page(&mut self) -> Result<(),Error> {
+        if self.page.len() == 0 { return Ok(()) }
+
+        self.file.write(&self.page)?;
+        self.page.clear();
+
+        if self.end_of_file { self.end_of_file=false; }
+        self.disk_ops+=1;
         Ok(())
     }
 }

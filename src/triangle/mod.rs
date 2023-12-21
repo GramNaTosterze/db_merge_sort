@@ -1,7 +1,8 @@
 use point::Point;
 use rand::{prelude::Distribution, distributions::Standard};
 use serde_derive::{Serialize, Deserialize};
-use std::{fmt};
+use std::num::ParseIntError;
+use std::{fmt, str};
 use std::cmp::Ordering;
 
 mod point;
@@ -20,13 +21,48 @@ impl Triangle {
         let b: f64 = self.b.distance(self.c);
         let c: f64 = self.c.distance(self.a);
         let s: f64 = (a+b+c)*0.5;
-        return (s*(s-a)*(s-b)*(s-c)).sqrt()
+        
+        let area = (s*(s-a)*(s-b)*(s-c)).sqrt();
+        return if area.is_nan() {0.0} else {area};
     }
 }
 
 impl fmt::Display for Triangle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{{\n{}\n{}\n{}\n}} trig:{}", self.a, self.b, self.c, self.tri_area())
+        write!(f, "{{ {} {} {} }} trig:{:.2}", self.a, self.b, self.c, self.tri_area())
+    }
+}
+impl str::FromStr for Triangle {
+    type Err = ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        //{p1,p2,p3}
+        let mut points: Vec<String> = vec![String::new();3];
+        let mut point_idx = 0;
+        let mut is_point = false;
+        for c in s.chars() {
+            match c {
+                '(' => {
+                    is_point = true;
+                    points[point_idx].push(c);
+                }
+                ')' => {
+                    is_point = false;
+                    points[point_idx].push(c);
+                    point_idx+=1;
+                }
+                _ => {
+                    if is_point {
+                        points[point_idx].push(c);
+                    }
+                }
+            }
+        }
+        Ok(Self{
+            a:points[0].parse()?,
+            b:points[1].parse()?,
+            c:points[2].parse()?
+        })
     }
 }
 

@@ -4,7 +4,7 @@ use core::panic;
 use std::{
     sync::Mutex,
     marker::PhantomData,
-    fs,
+    fs::{self},
     path::PathBuf,
     fmt::Display,
     io
@@ -19,7 +19,6 @@ static TAPE_NUM: Mutex<usize> = Mutex::new(0);
 pub struct Tape<R> 
 where R: Serialize+for<'a> Deserialize<'a>+PartialOrd+Display, Standard: Distribution<R> {
     record_type: PhantomData<R>,
-    pub idx: usize,
     pub run_len: Vec<usize>,
     file: FileHandler,
 }
@@ -37,18 +36,12 @@ where R: Serialize+for<'a> Deserialize<'a>+PartialOrd+Display, Standard: Distrib
                 *tape_num+=1;
                 return Self{
                     record_type: PhantomData,
-                    idx:0,
                     run_len:Vec::new(),
                     file, 
                 }
             }
             Err(_) => { panic!("Could not create file"); }
         }
-    }
-    pub fn from_file(path_buf: String) -> Self {
-        let tape: Tape<R> = Tape::new();
-        fs::copy(path_buf, tape.file.path()).expect("TODO: panic message");
-        return tape;
     }
 
     pub fn next_record(&mut self) -> R {
@@ -71,8 +64,9 @@ where R: Serialize+for<'a> Deserialize<'a>+PartialOrd+Display, Standard: Distrib
     }
     pub fn print(&mut self) {
         self.file.print_content::<R>().expect("TODO: panic message");
-        print!("n: ");
+        print!(" n: ");
         for run in &mut *self.run_len { print!("{run} "); }
+        println!("disk_ops: {}", self.disk_ops());
         println!();
     }
     pub fn flush(&mut self) -> Result<(), io::Error> {
@@ -83,12 +77,14 @@ where R: Serialize+for<'a> Deserialize<'a>+PartialOrd+Display, Standard: Distrib
         self.run_len = Vec::new();
         Ok(())
     }
+    pub fn disk_ops(&mut self) -> usize { return self.file.disk_ops(); }
+
 }
 
 impl<R> Drop for Tape<R> 
 where R: Serialize+for<'a> Deserialize<'a>+PartialOrd+Display, Standard: Distribution<R> {
     fn drop(&mut self) {
         /* remove created tape */
-        fs::remove_file(&self.file.path()).unwrap_or_else(|err| {panic!("Cannot remove file: {err}")});
+        let _ = fs::remove_file(&self.file.path());
     }
 }
